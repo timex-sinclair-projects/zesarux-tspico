@@ -6078,25 +6078,66 @@ z80_byte envia_load_comillas_sam(z80_byte puerto_h,z80_byte puerto_l)
 
 
 
-//TS-Pico device hook (M1: logging stub). Intercepts TS2068 ports $0E
-//(data) and $0F (status) and captures the TPI traffic to
-///tmp/tspico_hook.log. $0F returns 0xFF (bit6=ready) so the EXROM's
-//WF_NPH poll passes; $0E returns 0x00 (no real device yet). The socket
-//bridge to the real tspico.py handlers replaces these in M2.
-static FILE *tspico_hook_log=NULL;
-static unsigned long tspico_hook_seq=0;
-static void tspico_hook_open(void){
-  if (tspico_hook_log==NULL) tspico_hook_log=fopen("/tmp/tspico_hook.log","w");
+//TS-Pico device bridge (M2). Intercepts TS2068 ports $0E (data) and $0F
+//(status) and forwards each access to a Python process over a Unix-domain
+//socket. That process runs the TS-Pico firmware handlers (a BridgeMQ
+//transport replacing the PIO/FIFO layer + a host-filesystem SD card).
+//
+//Wire protocol — one request/reply frame per Z80 port access:
+//  ZEsarUX -> bridge : 2 bytes  [op, value]
+//     op 0 = OUT $0E (Z80 wrote data byte 'value')
+//     op 1 = IN  $0E (Z80 reads a data byte)        value ignored
+//     op 2 = IN  $0F (Z80 reads status; bit6=ready) value ignored
+//     op 3 = OUT $0F (Z80 wrote control byte 'value')
+//  bridge -> ZEsarUX : 1 byte  (data/status for reads; ack for writes)
+//
+//If no bridge is connected the hook falls back to the standalone stub
+//($0F=0xFF ready, $0E=0x00 = "no device"), so the emulator still runs
+//without the Python side. Socket path from $TSPICO_BRIDGE_SOCK
+//(default /tmp/tspico_bridge.sock).
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <string.h>
+
+static int tspico_sock=-1;
+static int tspico_sock_tried=0;
+
+static void tspico_bridge_connect(void){
+  if (tspico_sock_tried) return;
+  tspico_sock_tried=1;
+  const char *path=getenv("TSPICO_BRIDGE_SOCK");
+  if (path==NULL) path="/tmp/tspico_bridge.sock";
+  int fd=socket(AF_UNIX,SOCK_STREAM,0);
+  if (fd<0) return;
+  struct sockaddr_un addr;
+  memset(&addr,0,sizeof(addr));
+  addr.sun_family=AF_UNIX;
+  strncpy(addr.sun_path,path,sizeof(addr.sun_path)-1);
+  if (connect(fd,(struct sockaddr *)&addr,sizeof(addr))<0){ close(fd); return; }
+  tspico_sock=fd;
+  debug_printf(VERBOSE_INFO,"TS-Pico bridge connected on %s",path);
 }
+
+//op: 0=OUT$0E 1=IN$0E 2=IN$0F 3=OUT$0F. Returns the reply byte (data for
+//reads, ack for writes). Synchronous: blocks the CPU thread until the
+//bridge replies, which is exactly what a real Z80 IN does on the bus.
+static z80_byte tspico_bridge_xfer(z80_byte op, z80_byte value){
+  tspico_bridge_connect();
+  if (tspico_sock<0) return (op==2)?0xFF:0x00;   //standalone fallback
+  unsigned char req[2]={op,value};
+  if (write(tspico_sock,req,2)!=2){ close(tspico_sock); tspico_sock=-1; return (op==2)?0xFF:0x00; }
+  unsigned char rep=0x00;
+  ssize_t r=read(tspico_sock,&rep,1);
+  if (r!=1){ close(tspico_sock); tspico_sock=-1; return (op==2)?0xFF:0x00; }
+  return rep;
+}
+
 void tspico_hook_out(z80_byte port,z80_byte value){
-  tspico_hook_open();
-  if (tspico_hook_log){ fprintf(tspico_hook_log,"%6lu OUT $%02X = 0x%02X\n",tspico_hook_seq++,port,value); fflush(tspico_hook_log); }
+  tspico_bridge_xfer((port==0x0F)?3:0, value);
 }
 z80_byte tspico_hook_in(z80_byte port){
-  tspico_hook_open();
-  z80_byte valor=(port==0x0F)?0xFF:0x00;
-  if (tspico_hook_log){ fprintf(tspico_hook_log,"%6lu IN  $%02X -> 0x%02X\n",tspico_hook_seq++,port,valor); fflush(tspico_hook_log); }
-  return valor;
+  return tspico_bridge_xfer((port==0x0F)?2:1, 0);
 }
 
 z80_byte lee_puerto_spectrum(z80_byte puerto_h,z80_byte puerto_l)
