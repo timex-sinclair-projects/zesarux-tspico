@@ -218,7 +218,11 @@ void timex_init_memory_tables(void)
 	}
 
 	//Parece que los 8 kb de rom que se cargan en ex rom[0] tambien estan presentes en rom[1]
-	timex_ex_rom_mem_table[1]=timex_ex_rom_mem_table[0];
+	//TS-Pico 16K-EXROM: keep EX segment 1 as its own 8 KB buffer so a 16 KB
+	//EXROM (gus-exrom, code at $2000-$3FFF) maps real bytes. rom_load()
+	//mirrors seg0 into seg1 for stock 8 KB EXROM images, preserving the
+	//original mirror behavior for non-TS-Pico ROMs.
+	//timex_ex_rom_mem_table[1]=timex_ex_rom_mem_table[0];
 	//temp
 	//timex_ex_rom_mem_table[2]=timex_ex_rom_mem_table[0];
 	//timex_ex_rom_mem_table[3]=timex_ex_rom_mem_table[0];

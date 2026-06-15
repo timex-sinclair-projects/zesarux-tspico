@@ -3599,6 +3599,22 @@ Total 20 pages=320 Kb
             debug_printf(VERBOSE_ERR,"Error loading ROM. Expected size: 8192 Loaded: %d",leidos);
         }
 
+        //TS-Pico / 16K-EXROM support: a 32 KB ROM image carries a second
+        //8 KB EXROM page ($2000-$3FFF when banked into the EX bank). Load
+        //it into EX segment 1. If the image only has an 8 KB EXROM (the
+        //stock 24 KB TS2068 ROM), mirror segment 0 into segment 1 — real
+        //hardware decodes the 8 KB EXROM chip across the whole 16 KB
+        //EXROM window. Requires the seg0->seg1 alias in
+        //timex_init_memory_tables() to be removed so seg1 is its own buffer.
+        leidos=fread(timex_ex_rom_mem_table[1],1,8192,ptr_romfile);
+        if (leidos!=8192) {
+            memcpy(timex_ex_rom_mem_table[1],timex_ex_rom_mem_table[0],8192);
+            debug_printf(VERBOSE_INFO,"TS2068 EXROM: 8 KB image; mirroring EX seg0 into seg1");
+        }
+        else {
+            debug_printf(VERBOSE_INFO,"TS2068 EXROM: loaded full 16 KB (TS-Pico style)");
+        }
+
 
 
     }
