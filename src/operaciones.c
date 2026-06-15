@@ -6078,8 +6078,30 @@ z80_byte envia_load_comillas_sam(z80_byte puerto_h,z80_byte puerto_l)
 
 
 
+//TS-Pico device hook (M1: logging stub). Intercepts TS2068 ports $0E
+//(data) and $0F (status) and captures the TPI traffic to
+///tmp/tspico_hook.log. $0F returns 0xFF (bit6=ready) so the EXROM's
+//WF_NPH poll passes; $0E returns 0x00 (no real device yet). The socket
+//bridge to the real tspico.py handlers replaces these in M2.
+static FILE *tspico_hook_log=NULL;
+static unsigned long tspico_hook_seq=0;
+static void tspico_hook_open(void){
+  if (tspico_hook_log==NULL) tspico_hook_log=fopen("/tmp/tspico_hook.log","w");
+}
+void tspico_hook_out(z80_byte port,z80_byte value){
+  tspico_hook_open();
+  if (tspico_hook_log){ fprintf(tspico_hook_log,"%6lu OUT $%02X = 0x%02X\n",tspico_hook_seq++,port,value); fflush(tspico_hook_log); }
+}
+z80_byte tspico_hook_in(z80_byte port){
+  tspico_hook_open();
+  z80_byte valor=(port==0x0F)?0xFF:0x00;
+  if (tspico_hook_log){ fprintf(tspico_hook_log,"%6lu IN  $%02X -> 0x%02X\n",tspico_hook_seq++,port,valor); fflush(tspico_hook_log); }
+  return valor;
+}
+
 z80_byte lee_puerto_spectrum(z80_byte puerto_h,z80_byte puerto_l)
 {
+  if (MACHINE_IS_TIMEX_TS_TC_2068 && (puerto_l==0x0E || puerto_l==0x0F)) return tspico_hook_in(puerto_l);
   z80_int port=value_8_to_16(puerto_h,puerto_l);
   ula_contend_port_early( port );
   ula_contend_port_late( port );
@@ -9781,6 +9803,7 @@ acts as expected unless this registe is explicitly changed by the user/software.
 
 void out_port_spectrum(z80_int puerto,z80_byte value)
 {
+  if (MACHINE_IS_TIMEX_TS_TC_2068 && ((puerto&0xFF)==0x0E || (puerto&0xFF)==0x0F)) { tspico_hook_out(puerto&0xFF,value); return; }
   ula_contend_port_early( puerto );
   out_port_spectrum_no_time(puerto,value);
   ula_contend_port_late( puerto ); t_estados++;
