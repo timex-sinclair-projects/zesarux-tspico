@@ -995,6 +995,8 @@ void reset_cpu(void)
 
     debug_printf (VERBOSE_INFO,"Reset cpu");
 
+    tspico_bridge_reset();      //TS-Pico bridge: try connecting again
+
     if (esxdos_umount_on_reset.v) {
         if (esxdos_handler_enabled.v) {
             debug_printf(VERBOSE_DEBUG,"Disabling esxdos handler due to reset");

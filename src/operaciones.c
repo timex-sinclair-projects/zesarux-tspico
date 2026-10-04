@@ -6079,9 +6079,9 @@ z80_byte envia_load_comillas_sam(z80_byte puerto_h,z80_byte puerto_l)
 
 
 //TS-Pico device bridge (M2). Intercepts TS2068 ports $0E (data) and $0F
-//(status) and forwards each access to a Python process over a Unix-domain
-//socket. That process runs the TS-Pico firmware handlers (a BridgeMQ
-//transport replacing the PIO/FIFO layer + a host-filesystem SD card).
+//(status) and forwards each access to pico_host (the real TS-Pico firmware,
+//tools/emu in tspico-firmware) over TCP or a Unix socket. pico_host models
+//the bus state machine and keeps the SD card in a host folder.
 //
 //Wire protocol — one request/reply frame per Z80 port access:
 //  ZEsarUX -> bridge : 2 bytes  [op, value]
@@ -6089,34 +6089,98 @@ z80_byte envia_load_comillas_sam(z80_byte puerto_h,z80_byte puerto_l)
 //     op 1 = IN  $0E (Z80 reads a data byte)        value ignored
 //     op 2 = IN  $0F (Z80 reads status; bit6=ready) value ignored
 //     op 3 = OUT $0F (Z80 wrote control byte 'value')
+//     op 4 = HELLO (no Z80 access): value = bridge version we speak (1);
+//            the reply is the version the bridge speaks
 //  bridge -> ZEsarUX : 1 byte  (data/status for reads; ack for writes)
 //
-//If no bridge is connected the hook falls back to the standalone stub
-//($0F=0xFF ready, $0E=0x00 = "no device"), so the emulator still runs
-//without the Python side. Socket path from $TSPICO_BRIDGE_SOCK
-//(default /tmp/tspico_bridge.sock).
+//The full spec, version 1: docs/EMULATOR_BRIDGE.md in
+//timex-sinclair-projects/tspico-firmware.
+//
+//Where the bridge is: $TSPICO_BRIDGE, "tcp:HOST:PORT" or "unix:PATH";
+//default tcp:127.0.0.1:2068. ($TSPICO_BRIDGE_SOCK, the old setting, still
+//means unix:PATH.) One connection attempt, at the first access to
+//$0E/$0F, and again after a reset. With no bridge, or after losing it,
+//the hook acts as "TS-Pico not plugged in" ($0F=0xFF, $0E=0x00), so the
+//ROM's commands fail with a report instead of hanging.
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <string.h>
+
+#define TSPICO_BRIDGE_VERSION 1
 
 static int tspico_sock=-1;
 static int tspico_sock_tried=0;
 
-static void tspico_bridge_connect(void){
-  if (tspico_sock_tried) return;
-  tspico_sock_tried=1;
-  const char *path=getenv("TSPICO_BRIDGE_SOCK");
-  if (path==NULL) path="/tmp/tspico_bridge.sock";
+static int tspico_connect_unix(const char *path){
   int fd=socket(AF_UNIX,SOCK_STREAM,0);
-  if (fd<0) return;
+  if (fd<0) return -1;
   struct sockaddr_un addr;
   memset(&addr,0,sizeof(addr));
   addr.sun_family=AF_UNIX;
   strncpy(addr.sun_path,path,sizeof(addr.sun_path)-1);
-  if (connect(fd,(struct sockaddr *)&addr,sizeof(addr))<0){ close(fd); return; }
+  if (connect(fd,(struct sockaddr *)&addr,sizeof(addr))<0){ close(fd); return -1; }
+  return fd;
+}
+
+//hostport: "HOST:PORT"
+static int tspico_connect_tcp(const char *hostport){
+  char host[256];
+  const char *colon=strrchr(hostport,':');
+  if (colon==NULL || colon-hostport>=(int)sizeof(host)) return -1;
+  memcpy(host,hostport,colon-hostport);
+  host[colon-hostport]=0;
+  struct addrinfo hints,*res,*ai;
+  memset(&hints,0,sizeof(hints));
+  hints.ai_family=AF_UNSPEC;
+  hints.ai_socktype=SOCK_STREAM;
+  if (getaddrinfo(host,colon+1,&hints,&res)!=0) return -1;
+  int fd=-1;
+  for (ai=res;ai!=NULL;ai=ai->ai_next){
+    fd=socket(ai->ai_family,ai->ai_socktype,ai->ai_protocol);
+    if (fd<0) continue;
+    if (connect(fd,ai->ai_addr,ai->ai_addrlen)==0) break;
+    close(fd); fd=-1;
+  }
+  freeaddrinfo(res);
+  if (fd>=0){
+    int one=1;          //every frame is a round trip
+    setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&one,sizeof(one));
+  }
+  return fd;
+}
+
+static void tspico_bridge_connect(void){
+  if (tspico_sock_tried) return;
+  tspico_sock_tried=1;
+  char where[300];
+  const char *cfg=getenv("TSPICO_BRIDGE");
+  const char *old=getenv("TSPICO_BRIDGE_SOCK");
+  if (cfg==NULL && old!=NULL){ snprintf(where,sizeof(where),"unix:%s",old); cfg=where; }
+  if (cfg==NULL) cfg="tcp:127.0.0.1:2068";
+  int fd=-1;
+  if (strncmp(cfg,"unix:",5)==0) fd=tspico_connect_unix(cfg+5);
+  else if (strncmp(cfg,"tcp:",4)==0) fd=tspico_connect_tcp(cfg+4);
+  else { debug_printf(VERBOSE_ERR,"TSPICO_BRIDGE must be tcp:HOST:PORT or unix:PATH, not %s",cfg); return; }
+  if (fd<0){ debug_printf(VERBOSE_INFO,"TS-Pico bridge: nothing at %s; running as if no TS-Pico",cfg); return; }
+  //HELLO: say which bridge version we speak, hear the bridge's
+  unsigned char hello[2]={4,TSPICO_BRIDGE_VERSION};
+  unsigned char ver=0;
+  if (write(fd,hello,2)!=2 || read(fd,&ver,1)!=1){
+    close(fd);
+    debug_printf(VERBOSE_ERR,"TS-Pico bridge at %s didn't answer HELLO",cfg);
+    return;
+  }
   tspico_sock=fd;
-  debug_printf(VERBOSE_INFO,"TS-Pico bridge connected on %s",path);
+  debug_printf(VERBOSE_INFO,"TS-Pico bridge connected on %s (bridge version %d)",cfg,ver);
+}
+
+//After a reset of the emulated machine: try connecting again at the next access
+void tspico_bridge_reset(void){
+  if (tspico_sock<0) tspico_sock_tried=0;
 }
 
 //op: 0=OUT$0E 1=IN$0E 2=IN$0F 3=OUT$0F. Returns the reply byte (data for

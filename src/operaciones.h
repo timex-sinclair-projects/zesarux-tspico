@@ -589,4 +589,6 @@ extern z80_byte *sam_return_segment_memory(z80_int dir);
 
 extern z80_byte *tbblue_return_segment_memory(z80_int dir);
 
+extern void tspico_bridge_reset(void);
+
 #endif
