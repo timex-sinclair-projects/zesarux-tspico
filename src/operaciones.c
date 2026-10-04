@@ -6080,7 +6080,7 @@ z80_byte envia_load_comillas_sam(z80_byte puerto_h,z80_byte puerto_l)
 
 //TS-Pico device bridge (M2). Intercepts TS2068 ports $0E (data) and $0F
 //(status) and forwards each access to pico_host (the real TS-Pico firmware,
-//tools/emu in tspico-firmware) over TCP or a Unix socket. pico_host models
+//tools/emu in tspico-firmware-build) over TCP or a Unix socket. pico_host models
 //the bus state machine and keeps the SD card in a host folder.
 //
 //Wire protocol — one request/reply frame per Z80 port access:
@@ -6094,7 +6094,7 @@ z80_byte envia_load_comillas_sam(z80_byte puerto_h,z80_byte puerto_l)
 //  bridge -> ZEsarUX : 1 byte  (data/status for reads; ack for writes)
 //
 //The full spec, version 1: docs/EMULATOR_BRIDGE.md in
-//timex-sinclair-projects/tspico-firmware.
+//timex-sinclair-projects/tspico-firmware-build.
 //
 //Where the bridge is: $TSPICO_BRIDGE, "tcp:HOST:PORT" or "unix:PATH";
 //default tcp:127.0.0.1:2068. ($TSPICO_BRIDGE_SOCK, the old setting, still
