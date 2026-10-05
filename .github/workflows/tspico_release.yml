@@ -187,7 +187,8 @@ jobs:
         working-directory: src
         run: |
           # SDL stays: on Windows it's ZEsarUX's only display
-          ./configure --disable-curses --disable-cursesw --disable-aa --disable-caca --disable-sndfile 2>&1 | tail -40
+          # (and no X Windows: configure finds it under MSYS2, wrongly)
+          ./configure --disable-xwindows --disable-xext --disable-curses --disable-cursesw --disable-aa --disable-caca --disable-sndfile
           make -j"$(nproc)"
           ls -la zesarux.exe
 

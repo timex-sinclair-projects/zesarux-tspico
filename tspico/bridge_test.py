@@ -86,6 +86,7 @@ def main():
                           "--enable-remoteprotocol", "--remoteprotocol-port", str(ZRCP_PORT)],
                          cwd=os.path.dirname(emu), env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    state = ""
     try:
         time.sleep(2)                                   # let the ROM come up
         z = Zrcp(ZRCP_PORT)
@@ -96,6 +97,7 @@ def main():
         for _ in range(6):
             z.cmd("cpu-step")
         got = z.cmd("read-memory 40016 1").split()[-1]
+        state = z.cmd("get-registers") + "\n9C40: " + z.cmd("read-memory 40000 12")
         z.cmd("exit-cpu-step")
     finally:
         # A kill, not exit-emulator: ZEsarUX's exit saves a snapshot
@@ -114,6 +116,7 @@ def main():
         print(("  PASS  " if ok else "  FAIL  ") + msg)
     print("frames:", frames[:12])
     if not all(ok for ok, _ in checks):
+        print("after the steps:", state)
         sys.exit(1)
     print("ALL PASS")
 

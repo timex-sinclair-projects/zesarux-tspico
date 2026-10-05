@@ -41,6 +41,10 @@
 //Para Windows
 #ifdef MINGW
 #include <stdlib.h>
+//MinGW-w64's stdlib.h has only _MAX_PATH (MAX_PATH is in windows.h)
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
 #define PATH_MAX MAX_PATH
 #define NAME_MAX MAX_PATH
 #endif
