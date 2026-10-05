@@ -26,6 +26,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>          //usleep (MinGW-w64 doesn't bring it in otherwise)
 #if defined(__APPLE__)
         #include <SDL.h>
 #else
