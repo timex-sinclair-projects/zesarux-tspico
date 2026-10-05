@@ -48,8 +48,8 @@
 
 
 #ifdef MINGW
-//Para usar GetLogicalDrives
-#include <winbase.h>
+//Para usar GetLogicalDrives (windows.h: MinGW-w64's winbase.h needs its types first)
+#include <windows.h>
 #endif
 
 
