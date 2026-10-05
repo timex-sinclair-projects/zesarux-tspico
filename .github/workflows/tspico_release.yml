@@ -1,0 +1,178 @@
+name: TS-Pico release
+
+# ZEsarUX with the TS-Pico, as downloads: a signed and notarized macOS app
+# ("ZEsarUX TS-Pico") and a Linux tarball. Each build runs
+# tspico/bridge_test.py first (the TS-Pico bridge against a stand-in, stock
+# TS2068 ROM). A tag tspico-v* makes a GitHub release; a manual run leaves
+# workflow artefacts.
+#
+# macOS signing uses these secrets (without them the app is ad-hoc signed):
+#   MACOS_CERTIFICATE_P12, MACOS_CERTIFICATE_PASSWORD, APPLE_TEAM_ID,
+#   NOTARY_API_KEY_P8, NOTARY_API_KEY_ID, NOTARY_API_ISSUER_ID
+on:
+  push:
+    tags: ['tspico-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Only what ships everywhere: no SDL, curses, aalib, caca or libsndfile
+  CONFIGURE_MINIMAL: --disable-sdl --disable-curses --disable-cursesw --disable-aa --disable-caca --disable-sndfile
+
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build
+        working-directory: src
+        run: |
+          ./configure $CONFIGURE_MINIMAL
+          make -j"$(sysctl -n hw.ncpu)"
+          echo "Libraries outside the system:"
+          if otool -L zesarux | tail -n +2 | grep -vE '^\s*(/System/|/usr/lib/)'; then
+            echo "::error::zesarux links a library a user's Mac won't have"; exit 1
+          fi
+
+      - name: TS-Pico bridge test
+        run: python3 tspico/bridge_test.py src/zesarux
+
+      - name: Make "ZEsarUX TS-Pico.app"
+        working-directory: src
+        run: |
+          APP="$GITHUB_WORKSPACE/dist/ZEsarUX TS-Pico.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp macos/apptemplate/Contents/Info.plist "$APP/Contents/"
+          cp macos/apptemplate/Contents/Resources/* "$APP/Contents/Resources/"
+          cp zesarux "$APP/Contents/MacOS/zesarux"
+          FILES=$(printf 'print-commonfiles:\n\t@echo $(COMMONFILES)\n' | make -s -f Makefile -f - print-commonfiles)
+          cp -a $FILES "$APP/Contents/Resources/"
+          P="$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier io.github.timex-sinclair-projects.zesarux-tspico" "$P"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName ZEsarUX TS-Pico" "$P"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ZEsarUX TS-Pico" "$P"
+          cp "$GITHUB_WORKSPACE/TSPICO.md" "$APP/Contents/Resources/"
+
+      - name: Sign, notarize and staple
+        env:
+          P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
+          KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          ISSUER: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          APP="dist/ZEsarUX TS-Pico.app"
+          if [ -z "$P12" ] || [ -z "$TEAM" ] || [ -z "$KEY_P8" ] || [ -z "$KEY_ID" ] || [ -z "$ISSUER" ]; then
+            echo "No signing secrets: ad-hoc signed (Gatekeeper asks before the first launch)."
+            codesign --force --sign - "$APP"
+            ditto -c -k --keepParent "$APP" ZEsarUX-TS-Pico-macOS-unsigned.zip
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KC_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KC_PASSWORD" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASSWORD" "$KC"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          # Keychain Access exports with RC2-40: OpenSSL 3 needs -legacy
+          OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+          if ! "$OPENSSL" pkcs12 -legacy -in "$RUNNER_TEMP/cert.p12" -noout -passin env:P12_PASSWORD; then
+            echo "::error::MACOS_CERTIFICATE_PASSWORD doesn't open MACOS_CERTIFICATE_P12"
+            rm -f "$RUNNER_TEMP/cert.p12"; exit 1
+          fi
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASSWORD" "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -v -p codesigning "$KC" | sed -n 's/.*"\(Developer ID Application: .*('"$TEAM"')\)"/\1/p' | head -1)
+          [ -n "$IDENTITY" ] || { echo "::error::no Developer ID Application identity for the team"; exit 1; }
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+            --entitlements tspico/zesarux.entitlements "$APP/Contents/MacOS/zesarux"
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" \
+            --entitlements tspico/zesarux.entitlements "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          echo "$KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$KEY_ID" --issuer "$ISSUER" --wait --output-format json | tee "$RUNNER_TEMP/notary.json"
+          STATUS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/notary.json")
+          if [ "$STATUS" != "Accepted" ]; then
+            ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$RUNNER_TEMP/notary.json")
+            xcrun notarytool log "$ID" --key "$RUNNER_TEMP/notary.p8" --key-id "$KEY_ID" --issuer "$ISSUER" || true
+            rm -f "$RUNNER_TEMP/notary.p8"
+            echo "::error::notarization: $STATUS"; exit 1
+          fi
+          rm -f "$RUNNER_TEMP/notary.p8"
+          xcrun stapler staple "$APP"
+          spctl --assess --type execute --verbose "$APP"
+          ditto -c -k --keepParent "$APP" ZEsarUX-TS-Pico-macOS.zip
+
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ZEsarUX-TS-Pico-macOS
+          path: ZEsarUX-TS-Pico-macOS*.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-22.04          # an older glibc, so the binary runs on most current distros
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libasound2-dev libpulse-dev
+
+      - name: Build
+        working-directory: src
+        run: |
+          ./configure $CONFIGURE_MINIMAL
+          make -j"$(nproc)"
+
+      - name: TS-Pico bridge test
+        run: python3 tspico/bridge_test.py src/zesarux
+
+      - name: Tarball
+        working-directory: src
+        run: |
+          D="ZEsarUX-TS-Pico-linux-x86_64"
+          mkdir -p "$D"
+          FILES=$(printf 'print-commonfiles:\n\t@echo $(COMMONFILES)\n' | make -s -f Makefile -f - print-commonfiles)
+          cp -a zesarux $FILES "$D/"
+          cp "$GITHUB_WORKSPACE/TSPICO.md" "$D/"
+          tar czf "$GITHUB_WORKSPACE/$D.tar.gz" "$D"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ZEsarUX-TS-Pico-linux
+          path: ZEsarUX-TS-Pico-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --title "ZEsarUX with TS-Pico $GITHUB_REF_NAME" \
+              --notes-file TSPICO.md
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
