@@ -6530,6 +6530,10 @@ void zrcp_set_char_mode(int sock_connected_client)
 }
 
 //CSI : Control Sequence Introducer
+#ifdef S_NORMAL
+//MinGW-w64's winsock2.h brings in windows.h, whose S_NORMAL is a sound macro
+#undef S_NORMAL
+#endif
 enum enum_estados_char {
     S_NORMAL, S_ESC, S_CSI
 };
