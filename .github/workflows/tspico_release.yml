@@ -188,6 +188,9 @@ jobs:
         run: |
           # SDL stays: on Windows it's ZEsarUX's only display
           # (and no X Windows: configure finds it under MSYS2, wrongly)
+          # MinGW-w64 headers: unistd.h (usleep) isn't included where upstream's
+          # MinGW had it implicitly
+          export CFLAGS="-include unistd.h"
           ./configure --disable-xwindows --disable-xext --disable-curses --disable-cursesw --disable-aa --disable-caca --disable-sndfile
           make -j"$(nproc)"
           ls -la zesarux.exe

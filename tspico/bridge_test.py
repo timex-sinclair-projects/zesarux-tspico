@@ -88,11 +88,16 @@ def main():
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     state = ""
     try:
-        time.sleep(2)                                   # let the ROM come up
+        time.sleep(5)                                   # let the ROM come up (and clear RAM)
         z = Zrcp(ZRCP_PORT)
         z.cmd("enter-cpu-step")
-        z.cmd("write-memory 40000 243 219 15 50 80 156 62 85 211 14 24 254")
-        z.cmd("write-memory 40016 0")
+        prog = "F3DB0F32509C3E55D30E18FE"
+        for _ in range(10):                             # on a slow runner the first write can be lost
+            z.cmd("write-memory 40000 " + " ".join(str(int(prog[i:i + 2], 16)) for i in range(0, len(prog), 2)))
+            z.cmd("write-memory 40016 0")
+            if prog in z.cmd("read-memory 40000 12").upper():
+                break
+            time.sleep(1)
         z.cmd("set-register PC=9C40H")
         for _ in range(6):
             z.cmd("cpu-step")
