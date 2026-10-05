@@ -6096,59 +6096,106 @@ z80_byte envia_load_comillas_sam(z80_byte puerto_h,z80_byte puerto_l)
 //The full spec, version 1: docs/EMULATOR_BRIDGE.md in
 //timex-sinclair-projects/tspico-firmware-build.
 //
-//Where the bridge is: $TSPICO_BRIDGE, "tcp:HOST:PORT" or "unix:PATH";
+//Where the bridge is: $TSPICO_BRIDGE, "tcp:HOST:PORT" or (not on Windows)
+//"unix:PATH";
 //default tcp:127.0.0.1:2068. ($TSPICO_BRIDGE_SOCK, the old setting, still
 //means unix:PATH.) One connection attempt, at the first access to
 //$0E/$0F, and again after a reset. With no bridge, or after losing it,
 //the hook acts as "TS-Pico not plugged in" ($0F=0xFF, $0E=0x00), so the
 //ROM's commands fail with a report instead of hanging.
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <netdb.h>
-#include <unistd.h>
 #include <string.h>
+#ifdef MINGW
+  //Winsock, as network.c: wsock32 (no getaddrinfo there), no unix: sockets
+  #include <winsock2.h>
+  typedef SOCKET tspico_socket_t;
+  #define TSPICO_NO_SOCKET INVALID_SOCKET
+  #define tspico_close(fd) closesocket(fd)
+#else
+  #include <sys/socket.h>
+  #include <sys/un.h>
+  #include <netinet/in.h>
+  #include <netinet/tcp.h>
+  #include <netdb.h>
+  #include <unistd.h>
+  typedef int tspico_socket_t;
+  #define TSPICO_NO_SOCKET (-1)
+  #define tspico_close(fd) close(fd)
+#endif
 
 #define TSPICO_BRIDGE_VERSION 1
 
-static int tspico_sock=-1;
+static tspico_socket_t tspico_sock=TSPICO_NO_SOCKET;
 static int tspico_sock_tried=0;
 
-static int tspico_connect_unix(const char *path){
-  int fd=socket(AF_UNIX,SOCK_STREAM,0);
-  if (fd<0) return -1;
+//send()/recv(), not write()/read(): Winsock sockets aren't file descriptors
+static int tspico_send(tspico_socket_t fd,const unsigned char *buf,int len){
+  while (len>0){
+    int n=send(fd,(const char *)buf,len,0);
+    if (n<=0) return 0;
+    buf+=n; len-=n;
+  }
+  return 1;
+}
+
+static int tspico_recv(tspico_socket_t fd,unsigned char *b){
+  return recv(fd,(char *)b,1,0)==1;
+}
+
+#ifndef MINGW
+static tspico_socket_t tspico_connect_unix(const char *path){
+  tspico_socket_t fd=socket(AF_UNIX,SOCK_STREAM,0);
+  if (fd==TSPICO_NO_SOCKET) return fd;
   struct sockaddr_un addr;
   memset(&addr,0,sizeof(addr));
   addr.sun_family=AF_UNIX;
   strncpy(addr.sun_path,path,sizeof(addr.sun_path)-1);
-  if (connect(fd,(struct sockaddr *)&addr,sizeof(addr))<0){ close(fd); return -1; }
+  if (connect(fd,(struct sockaddr *)&addr,sizeof(addr))<0){ tspico_close(fd); return TSPICO_NO_SOCKET; }
   return fd;
 }
+#endif
 
 //hostport: "HOST:PORT"
-static int tspico_connect_tcp(const char *hostport){
+static tspico_socket_t tspico_connect_tcp(const char *hostport){
   char host[256];
   const char *colon=strrchr(hostport,':');
-  if (colon==NULL || colon-hostport>=(int)sizeof(host)) return -1;
+  if (colon==NULL || colon-hostport>=(int)sizeof(host)) return TSPICO_NO_SOCKET;
   memcpy(host,hostport,colon-hostport);
   host[colon-hostport]=0;
+  tspico_socket_t fd=TSPICO_NO_SOCKET;
+#ifdef MINGW
+  static int wsa_started=0;
+  if (!wsa_started){
+    WSADATA wsadata;
+    if (WSAStartup(MAKEWORD(2,2),&wsadata)!=0) return TSPICO_NO_SOCKET;
+    wsa_started=1;
+  }
+  struct hostent *h=gethostbyname(host);
+  if (h==NULL || h->h_addrtype!=AF_INET) return TSPICO_NO_SOCKET;
+  struct sockaddr_in addr;
+  memset(&addr,0,sizeof(addr));
+  addr.sin_family=AF_INET;
+  addr.sin_port=htons((unsigned short)atoi(colon+1));
+  memcpy(&addr.sin_addr,h->h_addr_list[0],sizeof(addr.sin_addr));
+  fd=socket(AF_INET,SOCK_STREAM,0);
+  if (fd==TSPICO_NO_SOCKET) return fd;
+  if (connect(fd,(struct sockaddr *)&addr,sizeof(addr))!=0){ tspico_close(fd); return TSPICO_NO_SOCKET; }
+#else
   struct addrinfo hints,*res,*ai;
   memset(&hints,0,sizeof(hints));
   hints.ai_family=AF_UNSPEC;
   hints.ai_socktype=SOCK_STREAM;
-  if (getaddrinfo(host,colon+1,&hints,&res)!=0) return -1;
-  int fd=-1;
+  if (getaddrinfo(host,colon+1,&hints,&res)!=0) return TSPICO_NO_SOCKET;
   for (ai=res;ai!=NULL;ai=ai->ai_next){
     fd=socket(ai->ai_family,ai->ai_socktype,ai->ai_protocol);
-    if (fd<0) continue;
+    if (fd==TSPICO_NO_SOCKET) continue;
     if (connect(fd,ai->ai_addr,ai->ai_addrlen)==0) break;
-    close(fd); fd=-1;
+    tspico_close(fd); fd=TSPICO_NO_SOCKET;
   }
   freeaddrinfo(res);
-  if (fd>=0){
+#endif
+  if (fd!=TSPICO_NO_SOCKET){
     int one=1;          //every frame is a round trip
-    setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&one,sizeof(one));
+    setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,(const char *)&one,sizeof(one));
   }
   return fd;
 }
@@ -6161,16 +6208,18 @@ static void tspico_bridge_connect(void){
   const char *old=getenv("TSPICO_BRIDGE_SOCK");
   if (cfg==NULL && old!=NULL){ snprintf(where,sizeof(where),"unix:%s",old); cfg=where; }
   if (cfg==NULL) cfg="tcp:127.0.0.1:2068";
-  int fd=-1;
-  if (strncmp(cfg,"unix:",5)==0) fd=tspico_connect_unix(cfg+5);
-  else if (strncmp(cfg,"tcp:",4)==0) fd=tspico_connect_tcp(cfg+4);
-  else { debug_printf(VERBOSE_ERR,"TSPICO_BRIDGE must be tcp:HOST:PORT or unix:PATH, not %s",cfg); return; }
-  if (fd<0){ debug_printf(VERBOSE_INFO,"TS-Pico bridge: nothing at %s; running as if no TS-Pico",cfg); return; }
+  tspico_socket_t fd=TSPICO_NO_SOCKET;
+  if (strncmp(cfg,"tcp:",4)==0) fd=tspico_connect_tcp(cfg+4);
+#ifndef MINGW
+  else if (strncmp(cfg,"unix:",5)==0) fd=tspico_connect_unix(cfg+5);
+#endif
+  else { debug_printf(VERBOSE_ERR,"TSPICO_BRIDGE must be tcp:HOST:PORT or (not on Windows) unix:PATH, not %s",cfg); return; }
+  if (fd==TSPICO_NO_SOCKET){ debug_printf(VERBOSE_INFO,"TS-Pico bridge: nothing at %s; running as if no TS-Pico",cfg); return; }
   //HELLO: say which bridge version we speak, hear the bridge's
   unsigned char hello[2]={4,TSPICO_BRIDGE_VERSION};
   unsigned char ver=0;
-  if (write(fd,hello,2)!=2 || read(fd,&ver,1)!=1){
-    close(fd);
+  if (!tspico_send(fd,hello,2) || !tspico_recv(fd,&ver)){
+    tspico_close(fd);
     debug_printf(VERBOSE_ERR,"TS-Pico bridge at %s didn't answer HELLO",cfg);
     return;
   }
@@ -6180,7 +6229,7 @@ static void tspico_bridge_connect(void){
 
 //After a reset of the emulated machine: try connecting again at the next access
 void tspico_bridge_reset(void){
-  if (tspico_sock<0) tspico_sock_tried=0;
+  if (tspico_sock==TSPICO_NO_SOCKET) tspico_sock_tried=0;
 }
 
 //op: 0=OUT$0E 1=IN$0E 2=IN$0F 3=OUT$0F. Returns the reply byte (data for
@@ -6188,12 +6237,13 @@ void tspico_bridge_reset(void){
 //bridge replies, which is exactly what a real Z80 IN does on the bus.
 static z80_byte tspico_bridge_xfer(z80_byte op, z80_byte value){
   tspico_bridge_connect();
-  if (tspico_sock<0) return (op==2)?0xFF:0x00;   //standalone fallback
+  if (tspico_sock==TSPICO_NO_SOCKET) return (op==2)?0xFF:0x00;   //standalone fallback
   unsigned char req[2]={op,value};
-  if (write(tspico_sock,req,2)!=2){ close(tspico_sock); tspico_sock=-1; return (op==2)?0xFF:0x00; }
   unsigned char rep=0x00;
-  ssize_t r=read(tspico_sock,&rep,1);
-  if (r!=1){ close(tspico_sock); tspico_sock=-1; return (op==2)?0xFF:0x00; }
+  if (!tspico_send(tspico_sock,req,2) || !tspico_recv(tspico_sock,&rep)){
+    tspico_close(tspico_sock); tspico_sock=TSPICO_NO_SOCKET;
+    return (op==2)?0xFF:0x00;
+  }
   return rep;
 }
 

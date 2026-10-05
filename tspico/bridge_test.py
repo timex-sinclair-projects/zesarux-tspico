@@ -97,12 +97,12 @@ def main():
             z.cmd("cpu-step")
         got = z.cmd("read-memory 40016 1").split()[-1]
         z.cmd("exit-cpu-step")
-        z.s.sendall(b"exit-emulator\n")              # closes the connection, no reply
     finally:
-        try:
-            p.wait(10)
-        except subprocess.TimeoutExpired:
-            p.kill()
+        # A kill, not exit-emulator: ZEsarUX's exit saves a snapshot
+        # (zesarux_autosave.zsf, beside the binary) that the next run
+        # would start from, stopped in this test's JR $.
+        p.kill()
+        p.wait(10)
 
     checks = [
         (frames[:1] == [(4, 1)], "HELLO first, version 1"),
