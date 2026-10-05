@@ -1,7 +1,7 @@
 name: TS-Pico release
 
 # ZEsarUX with the TS-Pico, as downloads: a signed and notarized macOS app
-# ("ZEsarUX TS-Pico") and a Linux tarball. Each build runs
+# ("ZEsarUX TS-Pico"), a Linux tarball and a Windows zip. Each build runs
 # tspico/bridge_test.py first (the TS-Pico bridge against a stand-in, stock
 # TS2068 ROM). A tag tspico-v* makes a GitHub release; a manual run leaves
 # workflow artefacts.
@@ -158,9 +158,64 @@ jobs:
           path: ZEsarUX-TS-Pico-linux-x86_64.tar.gz
           if-no-files-found: error
 
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            make zip
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-SDL
+            mingw-w64-x86_64-python
+
+      - name: SDL where ZEsarUX's configure looks for it (C:\mingw\SDL)
+        run: |
+          mkdir -p /c/mingw/SDL/include /c/mingw/SDL/lib
+          cp -r /mingw64/include/SDL /c/mingw/SDL/include/
+          cp /mingw64/lib/libSDL*.a /c/mingw/SDL/lib/
+
+      - name: Build
+        working-directory: src
+        run: |
+          # SDL stays: on Windows it's ZEsarUX's only display
+          ./configure --disable-curses --disable-cursesw --disable-aa --disable-caca --disable-sndfile 2>&1 | tail -40
+          make -j"$(nproc)"
+          ls -la zesarux.exe
+
+      - name: TS-Pico bridge test
+        run: python tspico/bridge_test.py src/zesarux.exe
+
+      - name: Zip
+        working-directory: src
+        run: |
+          D="ZEsarUX-TS-Pico-windows-x64"
+          mkdir -p "$D"
+          FILES=$(printf 'print-commonfiles:\n\t@echo $(COMMONFILES)\n' | make -s -f Makefile -f - print-commonfiles)
+          cp -a zesarux.exe $FILES "$D/"
+          # the MinGW DLLs it needs (SDL, winpthreads, libgcc, ...)
+          ldd zesarux.exe | awk '$3 ~ /^\/mingw64\// {print $3}' | sort -u | xargs -r cp -t "$D/"
+          ls "$D"/*.dll
+          cp "$GITHUB_WORKSPACE/TSPICO.md" "$D/"
+          zip -qr "$GITHUB_WORKSPACE/$D.zip" "$D"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ZEsarUX-TS-Pico-windows
+          path: ZEsarUX-TS-Pico-windows-x64.zip
+          if-no-files-found: error
+
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [macos, linux]
+    needs: [macos, linux, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
