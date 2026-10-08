@@ -23,10 +23,11 @@ What this branch (`tspico-device`) adds to upstream:
    in a checkout of tspico-firmware-build.)
 2. Start this ZEsarUX on the TS-Pico ROM:
 
-       zesarux --machine TS2068 --romfile TSPICO-22.ROM
+       zesarux --machine TS2068 --romfile TSPICO-23.ROM
 
    (The ROM is in tspico-firmware-build's [`src/rom/`](https://github.com/timex-sinclair-projects/tspico-firmware-build/tree/main/src/rom);
-   `TSPICO-22.ROM` at the time of writing.)
+   `TSPICO-23.ROM`, ROM 2.3, at the time of writing. Use the ROM and `pico_host` from
+   the same release: firmware 2.3 needs ROM 2.3.)
 
 It finds `pico_host` at `tcp:127.0.0.1:2068`. To use another address, set
 `TSPICO_BRIDGE` to `tcp:HOST:PORT` or (not on Windows) `unix:PATH`. Without `pico_host` the
