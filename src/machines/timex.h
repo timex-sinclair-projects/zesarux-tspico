@@ -56,8 +56,19 @@ extern z80_byte timex_type_memory_paged[];
 #define TIMEX_MEMORY_TYPE_HOME 1
 #define TIMEX_MEMORY_TYPE_DOCK 2
 #define TIMEX_MEMORY_TYPE_EX   3
+#define TIMEX_MEMORY_TYPE_EXPANSION 4   //Megabank: an expansion bank owns the chunk
 
 extern z80_byte debug_timex_paginas_memoria_mapeadas[];
+
+//TS-2068 Megabank (timex.c)
+extern int megabank_enabled;
+extern void megabank_init(void);
+extern void megabank_reset(void);
+extern void megabank_save(void);
+extern int megabank_chunk_writable(int chunk);
+extern int megabank_port(z80_byte port_l);
+extern void megabank_out(z80_byte port_l,z80_byte value);
+extern z80_byte megabank_in(z80_byte port_l);
 
 extern void timex_empty_dock_space(void);
 

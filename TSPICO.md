@@ -13,6 +13,8 @@ What this branch (`tspico-device`) adds to upstream:
 - **The TS-Pico bridge**, version 1 of
   [the bridge spec](https://github.com/timex-sinclair-projects/tspico-firmware-build/blob/main/docs/EMULATOR_BRIDGE.md)
   (`src/operaciones.c`), TS-2068 only.
+- **The TS-2068 Megabank**, a 4 MB expansion-bank RAM card, off unless
+  `MEGABANK_FILE` or `MEGABANK` is set: see [MEGABANK.md](MEGABANK.md).
 
 ## Running it
 
