@@ -7725,6 +7725,10 @@ $c400-$ffff	System RAM (mirrored every 1KB)
                 sprintf (segmentos[pagina].shortname,"%s","EX");
                 sprintf (segmentos[pagina].longname,"%s","EX");
             }
+            if (timex_type_memory_paged[pagina]==TIMEX_MEMORY_TYPE_EXPANSION) {
+                sprintf (segmentos[pagina].shortname,"%s","MB");
+                sprintf (segmentos[pagina].longname,"Megabank bank %d",debug_timex_paginas_memoria_mapeadas[pagina]);
+            }
             //sprintf (texto_paginas[pagina],"%c%d",tipo_memoria,debug_timex_paginas_memoria_mapeadas[pagina]);
 
 

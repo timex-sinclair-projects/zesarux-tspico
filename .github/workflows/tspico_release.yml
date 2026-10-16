@@ -3,7 +3,7 @@ name: TS-Pico release
 # ZEsarUX with the TS-Pico, as downloads: a signed and notarized macOS app
 # ("ZEsarUX TS-Pico"), a Linux tarball and a Windows zip. Each build runs
 # tspico/bridge_test.py first (the TS-Pico bridge against a stand-in, stock
-# TS2068 ROM). A tag tspico-v* makes a GitHub release; a manual run leaves
+# TS2068 ROM), then tspico/megabank_test.py (the Megabank, stock ROM). A tag tspico-v* makes a GitHub release; a manual run leaves
 # workflow artefacts.
 #
 # macOS signing uses these secrets (without them the app is ad-hoc signed):
@@ -40,6 +40,9 @@ jobs:
 
       - name: TS-Pico bridge test
         run: python3 tspico/bridge_test.py src/zesarux
+
+      - name: Megabank test
+        run: python3 tspico/megabank_test.py src/zesarux
 
       - name: Make "ZEsarUX TS-Pico.app"
         working-directory: src
@@ -142,6 +145,9 @@ jobs:
       - name: TS-Pico bridge test
         run: python3 tspico/bridge_test.py src/zesarux
 
+      - name: Megabank test
+        run: python3 tspico/megabank_test.py src/zesarux
+
       - name: Tarball
         working-directory: src
         run: |
@@ -197,6 +203,9 @@ jobs:
 
       - name: TS-Pico bridge test
         run: python tspico/bridge_test.py src/zesarux.exe
+
+      - name: Megabank test
+        run: python tspico/megabank_test.py src/zesarux.exe
 
       - name: Zip
         working-directory: src

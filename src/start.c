@@ -9368,6 +9368,8 @@ void end_emulator_saveornot_config(int saveconfig)
 {
     debug_printf (VERBOSE_INFO,"End emulator");
 
+    megabank_save();    //Megabank: the battery keeps its RAM
+
     //Para indicar al thread de emulacion que tiene que salir, esto es valido cuando se llega aqui con ctrl-c
     //Si no, se quedaria el loop de emulacion por debajo y en cuanto aqui cerramos el driver de video,
     //petaria con segfault al intentar refrescar la pantalla o similar

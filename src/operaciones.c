@@ -3198,7 +3198,11 @@ set_visualmembuffer(dir);
                 //proteccion rom
                 ////Constantes definidas en TIMEX_MEMORY_TYPE_ROM, _HOME, _DOCK, _EX
                 //z80_byte timex_type_memory_paged[8];
-                if (dir<16384) {
+                //Megabank: an owned chunk is RAM in any segment, unless write-protected
+                if (timex_type_memory_paged[dir/8192]==TIMEX_MEMORY_TYPE_EXPANSION) {
+                        if (!megabank_chunk_writable(dir/8192)) return;
+                }
+                else if (dir<16384) {
                         //Segmento 0 o 1
                         int segmento=dir/8192;
 			if (timex_type_memory_paged[segmento]!=TIMEX_MEMORY_TYPE_HOME) return;
@@ -6257,6 +6261,7 @@ z80_byte tspico_hook_in(z80_byte port){
 z80_byte lee_puerto_spectrum(z80_byte puerto_h,z80_byte puerto_l)
 {
   if (MACHINE_IS_TIMEX_TS_TC_2068 && (puerto_l==0x0E || puerto_l==0x0F)) return tspico_hook_in(puerto_l);
+  if (MACHINE_IS_TIMEX_TS_TC_2068 && megabank_port(puerto_l)) return megabank_in(puerto_l);
   z80_int port=value_8_to_16(puerto_h,puerto_l);
   ula_contend_port_early( port );
   ula_contend_port_late( port );
@@ -9959,6 +9964,7 @@ acts as expected unless this registe is explicitly changed by the user/software.
 void out_port_spectrum(z80_int puerto,z80_byte value)
 {
   if (MACHINE_IS_TIMEX_TS_TC_2068 && ((puerto&0xFF)==0x0E || (puerto&0xFF)==0x0F)) { tspico_hook_out(puerto&0xFF,value); return; }
+  if (MACHINE_IS_TIMEX_TS_TC_2068 && megabank_port(puerto&0xFF)) { megabank_out(puerto&0xFF,value); return; }
   ula_contend_port_early( puerto );
   out_port_spectrum_no_time(puerto,value);
   ula_contend_port_late( puerto ); t_estados++;

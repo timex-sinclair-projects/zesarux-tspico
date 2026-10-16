@@ -87,6 +87,179 @@ z80_byte debug_timex_paginas_memoria_mapeadas[8];
 
 z80_bit timex_cartridge_inserted={0};
 
+
+//TS-2068 Megabank: 4 MB of battery-backed RAM as Timex expansion banks
+//(github.com/timex-sinclair-projects/TS-2068-Megabank, docs/spec.md).
+//Ports FDh (select a register) and FCh (read or write it), decoded from A7-A0.
+//Each 8K chunk has an owner (OWN0-7, an expansion bank 1-253, 0 for none) and
+//a sub-page (SUB0-7). A chunk owned by one of the board's banks reads and
+//writes board RAM: the board pulls /BE, above HOME, EXROM and DOCK.
+//Environment, read once:
+//  MEGABANK_FILE=path  enables the board and keeps its RAM in that file (the
+//                      battery): loaded at start, saved on exit
+//  MEGABANK=1          enables the board without a file
+//  MEGABANK_BASE       first bank: 1 (default), 65, 129 or 193
+//  MEGABANK_SIZE       banks fitted: 8, 16, 32 or 64 (default)
+//  MEGABANK_WP=1       the write-protect switch is on
+
+#define MEGABANK_VERSION 1
+
+static void megabank_reset_registers(void);
+
+int megabank_enabled=0;
+static int megabank_initialized=0;
+static z80_byte *megabank_mem=NULL;
+static char megabank_file[1024];
+static z80_byte megabank_select;
+static z80_byte megabank_own[8];
+static z80_byte megabank_sub[8];
+static z80_byte megabank_wprot;
+static z80_byte megabank_base=1;
+static z80_byte megabank_size=64;
+static int megabank_wp_switch=0;
+
+static int megabank_env_int(const char *name,int def)
+{
+	const char *s=getenv(name);
+	if (s==NULL || *s==0) return def;
+	return atoi(s);
+}
+
+void megabank_init(void)
+{
+	if (megabank_initialized) return;
+	megabank_initialized=1;
+
+	const char *file=getenv("MEGABANK_FILE");
+	if (file!=NULL && *file) {
+		snprintf(megabank_file,sizeof(megabank_file),"%s",file);
+		megabank_enabled=1;
+	}
+	if (megabank_env_int("MEGABANK",0)) megabank_enabled=1;
+	if (!megabank_enabled) return;
+
+	int base=megabank_env_int("MEGABANK_BASE",1);
+	if (base!=1 && base!=65 && base!=129 && base!=193) {
+		debug_printf(VERBOSE_ERR,"MEGABANK_BASE must be 1, 65, 129 or 193, not %d; using 1",base);
+		base=1;
+	}
+	int size=megabank_env_int("MEGABANK_SIZE",64);
+	if (size!=8 && size!=16 && size!=32 && size!=64) {
+		debug_printf(VERBOSE_ERR,"MEGABANK_SIZE must be 8, 16, 32 or 64, not %d; using 64",size);
+		size=64;
+	}
+	megabank_base=base;
+	megabank_size=size;
+	megabank_wp_switch=megabank_env_int("MEGABANK_WP",0)!=0;
+
+	megabank_mem=calloc(megabank_size,65536);
+	if (megabank_mem==NULL) cpu_panic("Can not allocate memory for the Megabank");
+
+	if (megabank_file[0]) {
+		FILE *f=fopen(megabank_file,"rb");
+		if (f!=NULL) {
+			size_t n=fread(megabank_mem,1,(size_t)megabank_size*65536,f);
+			fclose(f);
+			debug_printf(VERBOSE_INFO,"Megabank: loaded %ld bytes from %s",(long)n,megabank_file);
+		}
+	}
+
+	megabank_reset_registers();
+	int last=megabank_base+megabank_size-1;
+	debug_printf(VERBOSE_INFO,"Megabank: banks %d-%d%s",megabank_base,last>253?253:last,
+		megabank_wp_switch?", write-protect switch on":"");
+}
+
+//The battery: keep the RAM for the next run
+void megabank_save(void)
+{
+	if (!megabank_enabled || megabank_mem==NULL || !megabank_file[0]) return;
+	FILE *f=fopen(megabank_file,"wb");
+	if (f==NULL) {
+		debug_printf(VERBOSE_ERR,"Megabank: can not write %s",megabank_file);
+		return;
+	}
+	fwrite(megabank_mem,1,(size_t)megabank_size*65536,f);
+	fclose(f);
+}
+
+//RESET: no chunk owned, SUBn = n, nothing write-protected. The RAM is kept.
+static void megabank_reset_registers(void)
+{
+	int i;
+	for (i=0;i<8;i++) {
+		megabank_own[i]=0;
+		megabank_sub[i]=i;
+	}
+	megabank_wprot=0;
+	megabank_select=0;
+}
+
+void megabank_reset(void)
+{
+	if (!megabank_enabled) return;
+	megabank_reset_registers();
+	if (MACHINE_IS_TIMEX_TS_TC_2068) timex_set_memory_pages();
+}
+
+//Whether the board answers memory cycles in this chunk (pulls /BE)
+static int megabank_owns(int chunk)
+{
+	if (!megabank_enabled) return 0;
+	int owner=megabank_own[chunk];
+	//FEh and FFh mean none: with BASE 193 only banks 193-253 are usable
+	return owner>=megabank_base && owner<megabank_base+megabank_size && owner<=253;
+}
+
+int megabank_chunk_writable(int chunk)
+{
+	return !megabank_wp_switch && !(megabank_wprot & (1<<chunk));
+}
+
+int megabank_port(z80_byte port_l)
+{
+	return megabank_enabled && (port_l==0xFC || port_l==0xFD);
+}
+
+void megabank_out(z80_byte port_l,z80_byte value)
+{
+	if (port_l==0xFD) {
+		megabank_select=value;
+		return;
+	}
+
+	z80_byte reg=megabank_select;
+	if (reg<0x08) {
+		megabank_own[reg]=value;
+		megabank_sub[reg]=reg;
+	}
+	else if (reg<0x10) megabank_sub[reg-8]=value&7;
+	else if (reg==0x10) megabank_wprot=value;
+	else return;   //read-only or unused
+
+	timex_set_memory_pages();
+}
+
+z80_byte megabank_in(z80_byte port_l)
+{
+	if (port_l==0xFD) return megabank_select;
+
+	z80_byte reg=megabank_select;
+	if (reg<0x08) return megabank_own[reg];
+	if (reg<0x10) return megabank_sub[reg-8];
+	switch (reg) {
+		case 0x10: return megabank_wprot;
+		case 0x11: return megabank_wp_switch?1:0;   //bit 1, battery low: never here
+		case 0x12: return 0xA5;
+		case 0x13: return 0x5A;
+		case 0x14: return megabank_base;
+		case 0x15: return megabank_size;
+		case 0x16: return MEGABANK_VERSION;
+	}
+	return 0xFF;
+}
+
+
 void timex_set_memory_pages(void)
 {
 	//timex_port_f4;
@@ -164,6 +337,15 @@ void timex_set_memory_pages(void)
 			mascara_puerto_f4=mascara_puerto_f4<<1;
 		}
 
+	//Megabank: an owned chunk is the board's, whatever F4h and FFh say
+	for (bloque_ram=0;bloque_ram<8;bloque_ram++) {
+		if (!megabank_owns(bloque_ram)) continue;
+		int page=(megabank_own[bloque_ram]-megabank_base)*8+megabank_sub[bloque_ram];
+		timex_memory_paged[bloque_ram]=&megabank_mem[page*8192];
+		timex_type_memory_paged[bloque_ram]=TIMEX_MEMORY_TYPE_EXPANSION;
+		debug_timex_paginas_memoria_mapeadas[bloque_ram]=megabank_own[bloque_ram];
+	}
+
 	//printf ("fin timex_set_memory_pages\n");
 
 }
@@ -194,6 +376,8 @@ void timex_init_memory_tables(void)
 	//48 kb home
 	//64 kb ex
 	//64 kb dock
+
+	megabank_init();
 
 	z80_byte *puntero;
 	puntero=memoria_spectrum;
